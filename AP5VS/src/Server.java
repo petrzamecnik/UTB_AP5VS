@@ -136,19 +136,17 @@ public class Server {
             SSLSocketFactory factory = context.getSocketFactory();
             SSLSocket socket = (SSLSocket) factory.createSocket("localhost", port);
 
-
-
             watchDog watchDog = new watchDog();
             watchDog.start();
             ExecutorService exec = Executors.newFixedThreadPool(2);
 
             while (true) {
-                Socket s = serverSocket.accept();
-                socketHandler handler = new socketHandler(s);
+                socket.startHandshake();
+                socketHandler handler = new socketHandler(socket);
                 watchDog.add(handler);
                 exec.execute(handler);
 
-                System.out.println("New client: " + s.getInetAddress() + ":" + s.getPort());
+                System.out.println("New client: " + socket.getInetAddress() + ":" + socket.getPort());
             }
 
         } catch (IOException e) {

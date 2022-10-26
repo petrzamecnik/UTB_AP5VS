@@ -1,7 +1,4 @@
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.TrustManagerFactory;
-import javax.net.ssl.X509TrustManager;
+import javax.net.ssl.*;
 import java.awt.*;
 import java.awt.event.KeyEvent;
 import java.io.FileInputStream;
@@ -9,10 +6,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
-import java.security.KeyManagementException;
-import java.security.KeyStore;
-import java.security.KeyStoreException;
-import java.security.NoSuchAlgorithmException;
+import java.security.*;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 
@@ -81,18 +75,19 @@ public class Telnet_threads {
             String keyFile = "public.p12";
             char passPhrase[] = "testpass".toCharArray();
             System.out.println("Loading key: " + keyFile);
-            InputStream inf = new FileInputStream(keyFile);
 
-            KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
-            ks.load(inf, passPhrase);
-            inf.close();
+            KeyStore ks = KeyStore.getInstance("pkcs12");
+            ks.load(new FileInputStream(keyFile), passPhrase);
+            KeyManagerFactory kmf =
+                    KeyManagerFactory.getInstance("SunX509");
+            kmf.init(ks, passPhrase);
+            SSLContext sc = SSLContext.getInstance("TLS");
+            sc.init(kmf.getKeyManagers(), null, null);
 
-            SSLContext context = SSLContext.getInstance("TLS");
-            TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-            tmf.init(ks);
-            X509TrustManager defaultTrustManager = (X509TrustManager) tmf.getTrustManagers()[0];
-            Server.SavingTrustManager tm = new Server.SavingTrustManager(defaultTrustManager);
-            context.init(null, new TrustManager[]{tm}, null);
+            SSLServerSocketFactory ssf = sc.getServerSocketFactory();
+            SSLServerSocket socket
+                    = (SSLServerSocket) ssf.createServerSocket(8888);
+            SSLSocket c = (SSLSocket) socket.accept();
 
             s = new Socket(host, port);
             input = s.getInputStream();
@@ -117,6 +112,8 @@ public class Telnet_threads {
         } catch (NoSuchAlgorithmException e) {
             throw new RuntimeException(e);
         } catch (KeyManagementException e) {
+            throw new RuntimeException(e);
+        } catch (UnrecoverableKeyException e) {
             throw new RuntimeException(e);
         }
 
