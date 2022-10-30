@@ -2,13 +2,14 @@ package server;
 
 import java.io.*;
 import java.net.*;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.*;
 import java.util.*;
 
 
 class ActiveHandlers {
-    private static final long serialVersionUID = 1L;
-    private HashSet<SocketHandler> activeHandlersSet = new HashSet<SocketHandler>();
+    //    private static final long serialVersionUID = 1L;
+    private final HashSet<SocketHandler> activeHandlersSet = new HashSet<SocketHandler>();
 
     /**
      * sendMessageToAll - Pošle zprávu všem aktivním klientům kromě sebe sama
@@ -17,11 +18,12 @@ class ActiveHandlers {
      * @param message - řetězec se zprávou
      */
     synchronized void sendMessageToAll(SocketHandler sender, String message) {
-        for (SocketHandler handler : activeHandlersSet)    // pro všechny aktivní handlery
+        for (SocketHandler handler : activeHandlersSet) {
             if (handler != sender) {
                 if (!handler.messages.offer(message))   // zkus přidat zprávu do fronty jeho zpráv
                     System.err.printf("Client %s message queue is full, dropping the message!\n", handler.clientID);
             }
+        }
     }
 
     synchronized void sendPrivateMessage(SocketHandler sender, String privateUserID, String message) {
@@ -46,6 +48,15 @@ class ActiveHandlers {
         }
     }
 
+    synchronized void sendGroupMessage(SocketHandler sender, String privateUserID, String groupName, String message) {
+        for (SocketHandler handler : activeHandlersSet) {
+            if (handler.userGroups.contains(groupName)) {
+                if (!handler.messages.offer(message))
+                    System.err.printf("Client %s message queue is full, dropping the message!\n", handler.clientID);
+            }
+        }
+    }
+
     synchronized void sendInfoMessage(SocketHandler sender, String message) {
         for (SocketHandler handler : activeHandlersSet) {
             if (handler == sender) {
@@ -60,10 +71,9 @@ class ActiveHandlers {
      * Metoda je sychronizovaná, protože HashSet neumí multithreading.
      *
      * @param handler - reference na handler, který se má přidat.
-     * @return true if the set did not already contain the specified element.
      */
-    synchronized boolean add(SocketHandler handler) {
-        return activeHandlersSet.add(handler);
+    synchronized void add(SocketHandler handler) {
+        activeHandlersSet.add(handler);
     }
 
     /**
@@ -71,10 +81,9 @@ class ActiveHandlers {
      * Metoda je sychronizovaná, protože HashSet neumí multithreading.
      *
      * @param handler - reference na handler, který se má odstranit
-     * @return true if the set did not already contain the specified element.
      */
-    synchronized boolean remove(SocketHandler handler) {
-        return activeHandlersSet.remove(handler);
+    synchronized void remove(SocketHandler handler) {
+        activeHandlersSet.remove(handler);
     }
 }
 
@@ -86,6 +95,11 @@ class SocketHandler {
     Socket mySocket;
 
     /**
+     * List of groups which have user joined
+     */
+    List<String> userGroups = new ArrayList<>();
+
+    /**
      * client ID je řetězec ve formátu <IP_adresa>:<port>
      */
     String clientID;
@@ -95,7 +109,7 @@ class SocketHandler {
      * Potřebujeme si ji udržovat, abychom mohli zprávu od tohoto klienta
      * poslat všem ostatním!
      */
-    ActiveHandlers activeHandlers;
+    final ActiveHandlers activeHandlers;
 
     /**
      * messages je fronta příchozích zpráv, kterou musí mít kažý klient svoji
@@ -137,7 +151,7 @@ class SocketHandler {
                 startSignal.countDown();
                 startSignal.await();
                 System.err.println("DBG>Output handler running for " + clientID);
-                writer = new OutputStreamWriter(mySocket.getOutputStream(), "UTF-8");
+                writer = new OutputStreamWriter(mySocket.getOutputStream(), StandardCharsets.UTF_8);
                 writer.write("\nYou are connected from " + clientID + "\n");
                 writer.flush();
                 while (!inputFinished) {
@@ -160,26 +174,42 @@ class SocketHandler {
     class InputHandler implements Runnable {
         public void run() {
             try {
-                List<String> groups = new ArrayList<String>();
                 System.err.println("DBG>Input handler starting for " + clientID);
                 startSignal.countDown();
                 startSignal.await();
                 System.err.println("DBG>Input handler running for " + clientID);
 
-                String request = "";
-                String privateMessage = "";
-                String privateClientID = "";
-                boolean isPrivate = false;
-                boolean isInfoMessage = false;
+                // init variables
+                String request;
+                String command;
+                String commandValue;
+                String privateMessage;
+                String privateClientID;
+                String group;
+                String groupMessage;
 
-                /** v okamžiku, kdy nás Thread pool spustí, přidáme se do množiny
-                 *  všech aktivních handlerů, aby chodily zprávy od ostatních i nám
+                boolean isPrivate;
+                boolean isInfoMessage;
+                boolean isGroupMessage;
+
+                /* v okamžiku, kdy nás Thread pool spustí, přidáme se do množiny
+                   všech aktivních handlerů, aby chodily zprávy od ostatních i nám
                  */
                 activeHandlers.add(SocketHandler.this);
-                BufferedReader reader = new BufferedReader(new InputStreamReader(mySocket.getInputStream(), "UTF-8"));
+                BufferedReader reader = new BufferedReader(new InputStreamReader(mySocket.getInputStream(), StandardCharsets.UTF_8));
                 while ((request = reader.readLine()) != null) {
-                    // přišla od mého klienta nějaká zpráva?
-                    // ano - pošli ji všem ostatním klientům
+
+                    // reset variables
+                    command = "";
+                    commandValue = "";
+                    privateClientID = "";
+                    privateMessage = "";
+                    group = "";
+                    groupMessage = "";
+                    isPrivate = false;
+                    isInfoMessage = false;
+                    isGroupMessage = false;
+
                     if (request.length() > 0 && request.charAt(0) == '#') {
                         List<Integer> allSpaceIndexes = new ArrayList<>();
                         for (int i = 0; i < request.length(); i++) {
@@ -188,52 +218,104 @@ class SocketHandler {
                                 allSpaceIndexes.add(i);
                             }
                         }
-                        String command = request.substring(1, allSpaceIndexes.get(0)).trim();
-                        String commandValue = request.substring(allSpaceIndexes.get(0)).trim();
+
+                        if (allSpaceIndexes.size() == 0) {
+                            allSpaceIndexes.add(request.length());
+                        }
+
+                        try {
+                            command = request.substring(1, allSpaceIndexes.get(0)).trim();
+                            commandValue = request.substring(allSpaceIndexes.get(0)).trim();
+                        } catch (Exception ignored) {
+                        }
 
                         switch (command) {
-                            case "setname":
+                            case "setname" -> {
                                 clientID = commandValue;
                                 request = "You have changed your name to: " + clientID;
                                 isInfoMessage = true;
-                                break;
-
-                            case "ng":
-                                groups.add(commandValue);
-                                request = "You have added a new group: " + commandValue;
-                                isInfoMessage = true;
-                                break;
-
-                            case "lsg":
-                                break;
-
-                            case "pm":
-                                isPrivate = true;
+                            }
+                            case "pm" -> {
                                 privateClientID = request.substring(allSpaceIndexes.get(0), allSpaceIndexes.get(1)).trim();
                                 privateMessage = request.substring(allSpaceIndexes.get(1)).trim();
-                                break;
-
-
+                                isPrivate = true;
+                            }
+                            case "ng" -> {
+                                Globals.allGroups.add(commandValue);
+                                request = "You have created a new group: " + commandValue;
+                                isInfoMessage = true;
+                            }
+                            case "lsg" -> {
+                                request = "Groups: " + Globals.allGroups;
+                                isInfoMessage = true;
+                            }
+                            case "lsmg" -> {
+                                request = "You are in these groups: " + userGroups;
+                                isInfoMessage = true;
+                            }
+                            case "jg" -> {
+                                if (Globals.allGroups.contains(commandValue)) {
+                                    userGroups.add(commandValue);
+                                    request = "You have joined group: " + commandValue;
+                                } else {
+                                    request = "This group does not exist!";
+                                }
+                                isInfoMessage = true;
+                            }
+                            case "lg" -> {
+                                if (Globals.allGroups.contains(commandValue)) {
+                                    userGroups.remove(commandValue);
+                                    request = "You have left group: " + commandValue;
+                                } else {
+                                    request = "This group does not exist!";
+                                }
+                                isInfoMessage = true;
+                            }
+                            case "gm" -> {
+                                group = request.substring(allSpaceIndexes.get(0), allSpaceIndexes.get(1)).trim();
+                                groupMessage = request.substring(allSpaceIndexes.get(1)).trim();
+                                isGroupMessage = true;
+                            }
+                            case "help" -> {
+                                request = """
+                                        \n
+                                        #setname name           -> change name
+                                        #pm user message        -> send private message
+                                        #ng groupName           -> create new group
+                                        #lsg                    -> list all groups
+                                        #lsmg                   -> list all groups you are member of
+                                        #jg name                -> join group
+                                        #lg name                -> leave group
+                                        #gm groupName message   -> send group message
+                                        """;
+                                isInfoMessage = true;
+                            }
+                            default -> {
+                                System.out.println("command: " + command + " | " + "commandValue: " + commandValue);
+                                request = "Invalid command!";
+                                isInfoMessage = true;
+                            }
                         }
                     }
 
                     if (isPrivate) {
-                        request = "Private from " + clientID + ": " + privateMessage;
+                        request = "Private message from " + clientID + " -> " + privateMessage;
                         System.out.println(request);
                         activeHandlers.sendPrivateMessage(SocketHandler.this, privateClientID, request);
 
                     } else if (isInfoMessage) {
-                        request = "Info: " + request;
+                        request = "Info -> " + request;
                         activeHandlers.sendInfoMessage(SocketHandler.this, request);
 
+                    } else if (isGroupMessage) {
+                        request = "From " + clientID + " in: " + group + " -> " + groupMessage;
+                        activeHandlers.sendGroupMessage(SocketHandler.this, clientID, group, request);
+
                     } else {
-                        request = "From " + clientID + ": " + request;
+                        request = "From " + clientID + "-> " + request;
                         System.out.println(request);
                         activeHandlers.sendMessageToAll(SocketHandler.this, request);
                     }
-
-                    isPrivate = false;
-                    isInfoMessage = false;
                 }
                 inputFinished = true;
                 messages.offer("OutputHandler, wakeup and die!");
@@ -257,9 +339,10 @@ public class Server {
 
         if (args.length > 0) {
             if (args[0].startsWith("--help")) {
-                System.out.printf("Usage: Server [PORT] [MAX_CONNECTIONS]\n" +
-                        "If PORT is not specified, default port %d is used\n" +
-                        "If MAX_CONNECTIONS is not specified, default number=%d is used", port, max_conn);
+                System.out.printf("""
+                        Usage: Server [PORT] [MAX_CONNECTIONS]
+                        If PORT is not specified, default port %d is used
+                        If MAX_CONNECTIONS is not specified, default number=%d is used""", port, max_conn);
                 return;
             }
             try {
@@ -298,8 +381,7 @@ public class Server {
                 if (!pool.awaitTermination(60, TimeUnit.SECONDS)) {
                     pool.shutdownNow(); // Cancel currently executing tasks
                     // Wait a while for tasks to respond to being cancelled
-                    if (!pool.awaitTermination(60, TimeUnit.SECONDS))
-                        System.err.println("Pool did not terminate");
+                    if (!pool.awaitTermination(60, TimeUnit.SECONDS)) System.err.println("Pool did not terminate");
                 }
             } catch (InterruptedException ie) {
                 // (Re-)Cancel if current thread also interrupted
