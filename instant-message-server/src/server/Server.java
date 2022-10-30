@@ -25,11 +25,23 @@ class ActiveHandlers {
     }
 
     synchronized void sendPrivateMessage(SocketHandler sender, String privateUserID, String message) {
+        boolean userExists = false;
+        String userNotFoundMessage = "User \"" + privateUserID + "\" does not exist!";
         for (SocketHandler handler : activeHandlersSet) {
-            if (handler.clientID.equals(privateUserID.trim())) {
+            if (handler.clientID.equals(privateUserID)) {
+                userExists = true;
                 if (!handler.messages.offer(message))
                     System.err.printf("Client %s message queue is full, dropping the message!\n", handler.clientID);
+            }
+        }
 
+        if (!userExists) {
+            for (SocketHandler handler : activeHandlersSet) {
+                if (handler == sender) {
+                    if (!handler.messages.offer(userNotFoundMessage))
+                        System.err.printf("Client %s message queue is full, dropping the message!\n", handler.clientID);
+
+                }
             }
         }
     }
@@ -176,17 +188,21 @@ class SocketHandler {
                                 allSpaceIndexes.add(i);
                             }
                         }
-                        String command = request.substring(1, allSpaceIndexes.get(0));
-                        String commandValue = request.substring(allSpaceIndexes.get(0));
+                        String command = request.substring(1, allSpaceIndexes.get(0)).trim();
+                        String commandValue = request.substring(allSpaceIndexes.get(0)).trim();
 
                         switch (command) {
                             case "setname":
-                                clientID = commandValue.trim();
+                                clientID = commandValue;
+                                request = "You have changed your name to: " + clientID;
                                 isInfoMessage = true;
                                 break;
 
                             case "ng":
                                 groups.add(commandValue);
+                                request = "You have added a new group: " + commandValue;
+                                isInfoMessage = true;
+                                break;
 
                             case "lsg":
                                 break;
@@ -202,13 +218,14 @@ class SocketHandler {
                     }
 
                     if (isPrivate) {
-                        request = "Private from " + privateClientID + ": " + privateMessage;
+                        request = "Private from " + clientID + ": " + privateMessage;
                         System.out.println(request);
                         activeHandlers.sendPrivateMessage(SocketHandler.this, privateClientID, request);
 
                     } else if (isInfoMessage) {
                         request = "Info: " + request;
                         activeHandlers.sendInfoMessage(SocketHandler.this, request);
+
                     } else {
                         request = "From " + clientID + ": " + request;
                         System.out.println(request);
@@ -230,7 +247,6 @@ class SocketHandler {
             }
             System.err.println("DBG>Input handler for " + clientID + " has finished.");
         }
-
     }
 }
 
