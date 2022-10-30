@@ -24,6 +24,25 @@ class ActiveHandlers {
             }
     }
 
+    synchronized void sendPrivateMessage(SocketHandler sender, String privateUserID, String message) {
+        for (SocketHandler handler : activeHandlersSet) {
+            if (handler.clientID.equals(privateUserID.trim())) {
+                if (!handler.messages.offer(message))
+                    System.err.printf("Client %s message queue is full, dropping the message!\n", handler.clientID);
+
+            }
+        }
+    }
+
+    synchronized void sendInfoMessage(SocketHandler sender, String message) {
+        for (SocketHandler handler : activeHandlersSet) {
+            if (handler == sender) {
+                if (!handler.messages.offer(message))
+                    System.err.printf("Client %s message queue is full, dropping the message!\n", handler.clientID);
+            }
+        }
+    }
+
     /**
      * add přidá do množiny aktivních handlerů nový handler.
      * Metoda je sychronizovaná, protože HashSet neumí multithreading.
@@ -110,67 +129,98 @@ class SocketHandler {
                 writer.write("\nYou are connected from " + clientID + "\n");
                 writer.flush();
                 while (!inputFinished) {
-                    String m = messages.take();// blokující čtení - pokud není ve frontě zpráv nic, uspi se!
-                    writer.write(m + "\r\n");    // pokud nějaké zprávy od ostatních máme,
-                    writer.flush();             // pošleme je našemu klientovi
+                    // blokující čtení - pokud není ve frontě zpráv nic, uspi se!
+                    // pokud nějaké zprávy od ostatních máme,
+                    // pošleme je našemu klientovi
+                    String m = messages.take();
+                    writer.write(m + "\r\n");
+                    writer.flush();
                     System.err.println("DBG>Message sent to " + clientID + ":" + m + "\n");
                 }
-            } catch (IOException e) {
-                // TODO Auto-generated catch block
-                e.printStackTrace();
-            } catch (InterruptedException e) {
+            } catch (IOException | InterruptedException e) {
                 // TODO Auto-generated catch block
                 e.printStackTrace();
             }
             System.err.println("DBG>Output handler for " + clientID + " has finished.");
-
         }
     }
 
     class InputHandler implements Runnable {
         public void run() {
             try {
+                List<String> groups = new ArrayList<String>();
                 System.err.println("DBG>Input handler starting for " + clientID);
                 startSignal.countDown();
                 startSignal.await();
                 System.err.println("DBG>Input handler running for " + clientID);
+
                 String request = "";
+                String privateMessage = "";
+                String privateClientID = "";
+                boolean isPrivate = false;
+                boolean isInfoMessage = false;
+
                 /** v okamžiku, kdy nás Thread pool spustí, přidáme se do množiny
                  *  všech aktivních handlerů, aby chodily zprávy od ostatních i nám
                  */
                 activeHandlers.add(SocketHandler.this);
                 BufferedReader reader = new BufferedReader(new InputStreamReader(mySocket.getInputStream(), "UTF-8"));
-                while ((request = reader.readLine()) != null) {        // přišla od mého klienta nějaká zpráva?
+                while ((request = reader.readLine()) != null) {
+                    // přišla od mého klienta nějaká zpráva?
                     // ano - pošli ji všem ostatním klientům
                     if (request.length() > 0 && request.charAt(0) == '#') {
-                        int spaceIndex = request.indexOf(' ');
-                        String command = request.substring(1, spaceIndex);
-                        String commandValue = request.substring(spaceIndex);
-
-//                        #setName Crowans
+                        List<Integer> allSpaceIndexes = new ArrayList<>();
+                        for (int i = 0; i < request.length(); i++) {
+                            char c = request.charAt(i);
+                            if (c == ' ') {
+                                allSpaceIndexes.add(i);
+                            }
+                        }
+                        String command = request.substring(1, allSpaceIndexes.get(0));
+                        String commandValue = request.substring(allSpaceIndexes.get(0));
 
                         switch (command) {
-                            case "setName":
-                                clientID = commandValue;
+                            case "setname":
+                                clientID = commandValue.trim();
+                                isInfoMessage = true;
+                                break;
+
+                            case "ng":
+                                groups.add(commandValue);
+
+                            case "lsg":
                                 break;
 
                             case "pm":
+                                isPrivate = true;
+                                privateClientID = request.substring(allSpaceIndexes.get(0), allSpaceIndexes.get(1)).trim();
+                                privateMessage = request.substring(allSpaceIndexes.get(1)).trim();
                                 break;
+
 
                         }
                     }
 
-                    request = "From client " + clientID + ": " + request;
-                    System.out.println(request);
-                    activeHandlers.sendMessageToAll(SocketHandler.this, request);
+                    if (isPrivate) {
+                        request = "Private from " + privateClientID + ": " + privateMessage;
+                        System.out.println(request);
+                        activeHandlers.sendPrivateMessage(SocketHandler.this, privateClientID, request);
+
+                    } else if (isInfoMessage) {
+                        request = "Info: " + request;
+                        activeHandlers.sendInfoMessage(SocketHandler.this, request);
+                    } else {
+                        request = "From " + clientID + ": " + request;
+                        System.out.println(request);
+                        activeHandlers.sendMessageToAll(SocketHandler.this, request);
+                    }
+
+                    isPrivate = false;
+                    isInfoMessage = false;
                 }
                 inputFinished = true;
                 messages.offer("OutputHandler, wakeup and die!");
-            } catch (UnknownHostException e) {
-                e.printStackTrace();
-            } catch (IOException e) {
-                e.printStackTrace();
-            } catch (InterruptedException e) {
+            } catch (IOException | InterruptedException e) {
                 e.printStackTrace();
             } finally {
                 // remove yourself from the set of activeHandlers
