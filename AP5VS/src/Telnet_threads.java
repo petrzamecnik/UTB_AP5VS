@@ -1,10 +1,7 @@
 import javax.net.ssl.*;
 import java.awt.*;
 import java.awt.event.KeyEvent;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.*;
 import java.net.Socket;
 import java.security.*;
 import java.security.cert.CertificateException;
@@ -62,58 +59,55 @@ public class Telnet_threads {
 
 
     public static void main(String[] args) {
-        Socket s;
-        InputStream input;
-        OutputStream output;
-//        String host;
-//        int port;
-
-        String host = "localhost";
-        int port = 9999;
-
         try {
-            String keyFile = "public.p12";
-            char passPhrase[] = "testpass".toCharArray();
-            System.out.println("Loading key: " + keyFile);
+            String file = "public.p12";
+            char passphrase[] = "testpass".toCharArray();
+            System.out.println("Loading KeyStore " + file + "...");
+            InputStream inf = new FileInputStream(file);
+            KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());//"pkcs12");
+            ks.load(inf, passphrase);
+            inf.close();
 
-            KeyStore ks = KeyStore.getInstance("pkcs12");
-            ks.load(new FileInputStream(keyFile), passPhrase);
-            KeyManagerFactory kmf =
-                    KeyManagerFactory.getInstance("SunX509");
-            kmf.init(ks, passPhrase);
-            SSLContext sc = SSLContext.getInstance("TLS");
-            sc.init(kmf.getKeyManagers(), null, null);
+            SSLContext context = SSLContext.getInstance("TLS");
+            TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+            tmf.init(ks);
+            X509TrustManager defaultTrustManager = (X509TrustManager) tmf.getTrustManagers()[0];
+            SavingTrustManager tm = new SavingTrustManager(defaultTrustManager);
+            context.init(null, new TrustManager[] { tm }, null);
 
-            SSLServerSocketFactory ssf = sc.getServerSocketFactory();
-            SSLServerSocket socket
-                    = (SSLServerSocket) ssf.createServerSocket(8888);
-            SSLSocket c = (SSLSocket) socket.accept();
+            SSLSocketFactory factory = context.getSocketFactory();
+            SSLSocket socket = (SSLSocket) factory.createSocket("localhost", 8888);
 
-            s = new Socket(host, port);
-            input = s.getInputStream();
-            output = s.getOutputStream();
+            socket.startHandshake();
+            PrintWriter out = new PrintWriter(new BufferedWriter(new OutputStreamWriter(socket.getOutputStream())));
 
-            Thread thread_1 = new myThread(input);
-            thread_1.start();
+            out.println("Ahoj, tady je SSL Socket klient\n A to je vse\n.");
+            out.println();
+            out.flush();
 
-            while (true) {
-                if (!thread_1.isAlive() || s.isClosed()) return;
-                int char_ = System.in.read();
-                output.write(char_);
-                output.flush();
-            }
+            if (out.checkError())
+                System.out.println("SSLSocketClient:  java.io.PrintWriter error");
 
-        } catch (IOException | AWTException e) {
-            throw new RuntimeException(e);
-        } catch (CertificateException e) {
-            throw new RuntimeException(e);
-        } catch (KeyStoreException e) {
-            throw new RuntimeException(e);
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException(e);
-        } catch (KeyManagementException e) {
-            throw new RuntimeException(e);
-        } catch (UnrecoverableKeyException e) {
+//            while (true) {
+//                if (!thread_1.isAlive() || s.isClosed()) return;
+//                int char_ = System.in.read();
+//                output.write(char_);
+//                output.flush();
+//            }
+
+            /* read response */
+            BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+
+            String inputLine;
+            while ((inputLine = in.readLine()) != null)
+                System.out.println(inputLine);
+
+            in.close();
+            out.close();
+            socket.close();
+
+        } catch (IOException | CertificateException | KeyStoreException | NoSuchAlgorithmException |
+                 KeyManagementException e) {
             throw new RuntimeException(e);
         }
 

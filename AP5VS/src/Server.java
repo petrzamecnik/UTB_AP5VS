@@ -1,57 +1,13 @@
 import javax.net.ssl.*;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.security.KeyManagementException;
-import java.security.KeyStore;
-import java.security.KeyStoreException;
-import java.security.NoSuchAlgorithmException;
+import java.security.*;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 import java.util.LinkedList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-
-class watchDog extends Thread {
-    LinkedList<socketHandler> list = new LinkedList<>();
-
-    synchronized void add(socketHandler handler) {
-        list.add(handler);
-    }
-
-    synchronized void remove(socketHandler handler) {
-        list.remove(handler);
-    }
-
-    synchronized void checkHandlerActivity() {
-        try {
-            long time = System.currentTimeMillis();
-            for (socketHandler handler : list) {
-                if (time - handler.lastActivityTime > 10000) {
-                    System.out.println("Killed: " + handler.socket.getPort());
-                    handler.socket.close();
-                    remove(handler);
-                }
-            }
-
-        } catch (Exception e) {
-
-        }
-    }
-
-    public void run() {
-        while (true) {
-            try {
-                checkHandlerActivity();
-                Thread.sleep(1000);
-            } catch (Exception e) {
-            }
-        }
-    }
-}
 
 class socketHandler implements Runnable {
     protected final Socket socket;
@@ -83,7 +39,6 @@ class socketHandler implements Runnable {
 }
 
 
-
 public class Server {
     static int port = 9999;
 
@@ -111,54 +66,128 @@ public class Server {
     }
 
     public static void main(String[] args) {
-        System.out.println("Hello world!");
+        String ksName = "zamecnik.p12";
+        char ksPass[] = "testpass".toCharArray();
+        char ctPass[] = "testpass".toCharArray();
 
         try {
-            String keyFile = "zamecnik.p12";
-            char passPhrase[] = "testpass".toCharArray();
-            System.out.println("Loading key: " + keyFile);
-            InputStream inf = new FileInputStream(keyFile);
-
-            KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
-            ks.load(inf, passPhrase);
-            inf.close();
-
-            SSLContext context = SSLContext.getInstance("TLS");
-            TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-            tmf.init(ks);
-            X509TrustManager defaultTrustManager = (X509TrustManager) tmf.getTrustManagers()[0];
-            SavingTrustManager tm = new SavingTrustManager(defaultTrustManager);
-            context.init(null, new TrustManager[] { tm }, null);
-
-            ServerSocket serverSocket = new ServerSocket(port);
-            System.out.println("server running");
-
-            SSLSocketFactory factory = context.getSocketFactory();
-            SSLSocket socket = (SSLSocket) factory.createSocket("localhost", port);
+            KeyStore ks = KeyStore.getInstance("pkcs12");
+            ks.load(new FileInputStream(ksName), ksPass);
+            KeyManagerFactory kmf =
+                    KeyManagerFactory.getInstance("SunX509");
+            kmf.init(ks, ctPass);
+            SSLContext sc = SSLContext.getInstance("TLS");
+            sc.init(kmf.getKeyManagers(), null, null);
+            SSLServerSocketFactory ssf = sc.getServerSocketFactory();
+            SSLServerSocket sslServerSocket
+                    = (SSLServerSocket) ssf.createServerSocket(8888);
+            printServerSocketInfo(sslServerSocket);
+            SSLSocket sslSocket = (SSLSocket) sslServerSocket.accept();
+            printSocketInfo(sslSocket);
+            BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
+                    sslSocket.getOutputStream()));
+            BufferedReader reader = new BufferedReader(new InputStreamReader(
+                    sslSocket.getInputStream()));
+            String message = "Welcome to SSL Reverse Echo Server." +
+                    " Please type in some words.";
+            writer.write(message, 0, message.length());
+            writer.newLine();
+            writer.flush();
 
             watchDog watchDog = new watchDog();
             watchDog.start();
-            ExecutorService exec = Executors.newFixedThreadPool(2);
+            ExecutorService exec = Executors.newFixedThreadPool(10);
 
-            while (true) {
-                socket.startHandshake();
-                socketHandler handler = new socketHandler(socket);
+            while ((message = reader.readLine()) != null) {
+                socketHandler handler = new socketHandler(sslSocket);
                 watchDog.add(handler);
                 exec.execute(handler);
 
-                System.out.println("New client: " + socket.getInetAddress() + ":" + socket.getPort());
+                writer.write(message);
+                writer.newLine();
+                writer.flush();
+
+
+//                socketHandler handler = new socketHandler(sslSocket);
+//                watchDog.add(handler);
+//                exec.execute(handler);
+
+                System.out.println("New client: " + sslSocket.getInetAddress() + ":" + sslSocket.getPort());
             }
 
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        } catch (KeyStoreException e) {
-            throw new RuntimeException(e);
-        } catch (CertificateException e) {
-            throw new RuntimeException(e);
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException(e);
-        } catch (KeyManagementException e) {
+        } catch (IOException | KeyStoreException | CertificateException | NoSuchAlgorithmException |
+                 KeyManagementException | UnrecoverableKeyException e) {
             throw new RuntimeException(e);
         }
+
     }
+    private static void printSocketInfo(SSLSocket s) {
+        System.out.println("Socket class: " + s.getClass());
+        System.out.println("   Remote address = "
+                + s.getInetAddress().toString());
+        System.out.println("   Remote port = " + s.getPort());
+        System.out.println("   Local socket address = "
+                + s.getLocalSocketAddress().toString());
+        System.out.println("   Local address = "
+                + s.getLocalAddress().toString());
+        System.out.println("   Local port = " + s.getLocalPort());
+        System.out.println("   Need client authentication = "
+                + s.getNeedClientAuth());
+        SSLSession ss = s.getSession();
+        System.out.println("   Cipher suite = " + ss.getCipherSuite());
+        System.out.println("   Protocol = " + ss.getProtocol());
+    }
+
+    private static void printServerSocketInfo(SSLServerSocket s) {
+        System.out.println("Server socket class: " + s.getClass());
+        System.out.println("   Socket address = "
+                + s.getInetAddress().toString());
+        System.out.println("   Socket port = "
+                + s.getLocalPort());
+        System.out.println("   Need client authentication = "
+                + s.getNeedClientAuth());
+        System.out.println("   Want client authentication = "
+                + s.getWantClientAuth());
+        System.out.println("   Use client mode = "
+                + s.getUseClientMode());
+    }
+}
+
+class watchDog extends Thread {
+    LinkedList<socketHandler> list = new LinkedList<>();
+
+    synchronized void add(socketHandler handler) {
+        list.add(handler);
+    }
+
+    synchronized void remove(socketHandler handler) {
+        list.remove(handler);
+    }
+
+    synchronized void checkHandlerActivity() {
+        try {
+            long time = System.currentTimeMillis();
+            for (socketHandler handler : list) {
+                if (time - handler.lastActivityTime > 20000) {
+                    System.out.println("Killed: " + handler.socket.getPort());
+                    handler.socket.close();
+                    remove(handler);
+                }
+            }
+
+        } catch (Exception ignored) {
+
+        }
+    }
+
+    public void run() {
+        while (true) {
+            try {
+                checkHandlerActivity();
+                Thread.sleep(1000);
+            } catch (Exception e) {
+            }
+        }
+    }
+
 }

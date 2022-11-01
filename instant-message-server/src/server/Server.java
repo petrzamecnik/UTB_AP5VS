@@ -312,7 +312,7 @@ class SocketHandler {
                         activeHandlers.sendGroupMessage(SocketHandler.this, clientID, group, request);
 
                     } else {
-                        request = "From " + clientID + "-> " + request;
+                        request = "From " + clientID + " -> " + request;
                         System.out.println(request);
                         activeHandlers.sendMessageToAll(SocketHandler.this, request);
                     }
